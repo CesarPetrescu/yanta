@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
@@ -66,17 +67,20 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -210,26 +214,35 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            val scheme = darkColorScheme(
+            // Define a strict OLED dark theme
+            val oledScheme = darkColorScheme(
                 background = Color.Black,
-                surface = Color(0xFF0A0A0A),
-                primary = Color(0xFF90CAF9),
-                secondary = Color(0xFF80CBC4),
+                surface = Color.Black,
+                surfaceVariant = Color(0xFF121212),
                 onBackground = Color.White,
                 onSurface = Color.White,
-                onPrimary = Color.Black,
-                onSecondary = Color.Black
+                onSurfaceVariant = Color(0xFFE0E0E0),
+                primary = Color(0xFF90CAF9),
+                secondary = Color(0xFF80CBC4),
+                outline = Color(0xFF424242)
             )
-            MaterialTheme(colorScheme = scheme) {
-                PhoneUI(
-                    notes = notesState,
-                    projects = projectsState,
-                    status = connectionStatus.value,
-                    onSend = ::sendNote,
-                    onSaveSettings = { saveSettings(it.first, it.second) },
-                    currentIp = getCurrentIp(),
-                    currentPort = getCurrentPort()
-                )
+            
+            MaterialTheme(colorScheme = oledScheme) {
+                // Force the entire app to have a black background
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color.Black
+                ) {
+                    PhoneUI(
+                        notes = notesState,
+                        projects = projectsState,
+                        status = connectionStatus.value,
+                        onSend = ::sendNote,
+                        onSaveSettings = { saveSettings(it.first, it.second) },
+                        currentIp = getCurrentIp(),
+                        currentPort = getCurrentPort()
+                    )
+                }
             }
         }
     }
@@ -709,17 +722,18 @@ fun PhoneUI(
     }
 
     Scaffold(
+        containerColor = Color.Black, // Force scaffold black
         topBar = {
             TopAppBar(
                 title = { Text("Live Notes (BLE)", color = Color.White) },
-                colors = androidx.compose.material3.TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF0A0A0A),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Black,
                     titleContentColor = Color.White,
                     actionIconContentColor = Color.White
                 ),
                 actions = {
                     IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                     }
                 }
             )
@@ -757,7 +771,7 @@ fun PhoneUI(
                         modifier = Modifier.weight(1f)
                     ) {
                         StatusRow(status = status)
-                        Divider(modifier = Modifier.padding(vertical = 8.dp))
+                        Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF333333))
                         ProjectFilterRow(
                             projects = projects,
                             selected = selectedProjectFilter,
@@ -770,8 +784,8 @@ fun PhoneUI(
                             value = searchQuery,
                             onValueChange = { searchQuery = it },
                             modifier = Modifier.fillMaxWidth(),
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-                            placeholder = { Text("Search title or markdown...") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = Color.Gray) },
+                            placeholder = { Text("Search title or markdown...", color = Color.Gray) },
                             singleLine = true,
                             colors = darkTextFieldColors()
                         )
@@ -784,7 +798,7 @@ fun PhoneUI(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     StatusRow(status = status)
-                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+                    Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF333333))
 
                     ProjectFilterRow(
                         projects = projects,
@@ -799,8 +813,8 @@ fun PhoneUI(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
                         modifier = Modifier.fillMaxWidth(),
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-                        placeholder = { Text("Search title or markdown...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = Color.Gray) },
+                        placeholder = { Text("Search title or markdown...", color = Color.Gray) },
                         singleLine = true,
                         colors = darkTextFieldColors()
                     )
@@ -837,14 +851,14 @@ fun PhoneUI(
                 editingNote = null
             },
             sheetState = sheetState,
-            containerColor = Color(0xFF0A0A0A)
+            containerColor = Color(0xFF121212) // Dark background for bottom sheet
         ) {
             NoteComposer(
                 title = title,
                 body = body,
                 projectName = projectName,
                 projectColor = projectColor,
-                availableProjects = projects,
+                availableProjects = availableProjects,
                 showPreview = showPreview,
                 onTitleChange = { title = it },
                 onBodyChange = { body = it },
@@ -883,7 +897,7 @@ fun StatusRow(status: String) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF0D0D0D), RoundedCornerShape(12.dp))
+            .background(Color(0xFF1A1A1A), RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -914,12 +928,15 @@ fun ProjectFilterRow(
         FilterChip(
             selected = selected == null,
             onClick = { onSelect(null) },
-            label = { Text("All ($totalCount)") },
+            label = { Text("All ($totalCount)", color = Color.White) },
             colors = FilterChipDefaults.filterChipColors(
-                containerColor = Color(0xFF111111),
+                containerColor = Color(0xFF1A1A1A),
                 labelColor = Color.White,
-                selectedContainerColor = Color(0xFF1F2937),
+                selectedContainerColor = Color(0xFF333333),
                 selectedLabelColor = Color.White
+            ),
+            border = FilterChipDefaults.filterChipBorder(
+                borderColor = Color(0xFF333333)
             )
         )
         projects.forEach { project ->
@@ -928,7 +945,7 @@ fun ProjectFilterRow(
                 onClick = { onSelect(project.name) },
                 label = {
                     val count = counts[project.name] ?: 0
-                    Text("${project.name} ($count)")
+                    Text("${project.name} ($count)", color = Color.White)
                 },
                 leadingIcon = {
                     Box(
@@ -938,10 +955,13 @@ fun ProjectFilterRow(
                     )
                 },
                 colors = FilterChipDefaults.filterChipColors(
-                    containerColor = Color(0xFF111111),
+                    containerColor = Color(0xFF1A1A1A),
                     labelColor = Color.White,
                     selectedContainerColor = Color.fromHex(project.color).copy(alpha = 0.25f),
                     selectedLabelColor = Color.White
+                ),
+                border = FilterChipDefaults.filterChipBorder(
+                    borderColor = if (selected == project.name) Color.fromHex(project.color) else Color(0xFF333333)
                 )
             )
         }
@@ -966,7 +986,7 @@ fun NoteComposer(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F0F0F)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A)),
         border = BorderStroke(1.25.dp, Color.fromHex(projectColor)),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
     ) {
@@ -981,7 +1001,7 @@ fun NoteComposer(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 TextButton(onClick = onTogglePreview) {
-                    Text(if (showPreview) "Hide preview" else "Show preview")
+                    Text(if (showPreview) "Hide preview" else "Show preview", color = Color(0xFF90CAF9))
                 }
             }
 
@@ -1029,7 +1049,8 @@ fun NoteComposer(
             Button(
                 onClick = onSubmit,
                 enabled = title.isNotBlank() && body.isNotBlank(),
-                modifier = Modifier.align(Alignment.End)
+                modifier = Modifier.align(Alignment.End),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF90CAF9), contentColor = Color.Black)
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Save")
                 Spacer(Modifier.width(6.dp))
@@ -1079,7 +1100,7 @@ fun ProjectSelector(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.ColorLens, contentDescription = "Project color", tint = Color.fromHex(projectColor))
             Spacer(Modifier.width(4.dp))
-            Text("Project & color", style = MaterialTheme.typography.labelMedium)
+            Text("Project & color", style = MaterialTheme.typography.labelMedium, color = Color.White)
         }
         ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
             OutlinedTextField(
@@ -1089,17 +1110,27 @@ fun ProjectSelector(
                 modifier = Modifier
                     .menuAnchor()
                     .fillMaxWidth(),
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                colors = darkTextFieldColors()
             )
-            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            ExposedDropdownMenu(
+                expanded = expanded, 
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.background(Color(0xFF1A1A1A))
+            ) {
                 availableProjects.forEach { project ->
                     DropdownMenuItem(
-                        text = { Text(project.name) },
+                        text = { Text(project.name, color = Color.White) },
                         onClick = {
                             onProjectChange(project.name)
                             onColorChange(project.color)
                             expanded = false
-                        }
+                        },
+                        colors = androidx.compose.material3.MenuDefaults.itemColors(
+                            textColor = Color.White,
+                            leadingIconColor = Color.White,
+                            trailingIconColor = Color.White
+                        )
                     )
                 }
             }
@@ -1170,8 +1201,8 @@ fun NoteCard(note: NotePayload, onOpen: ((NotePayload) -> Unit)?) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = onOpen != null) { onOpen?.invoke(note) },
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F0F0F)),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.9f)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF121212)),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -1339,10 +1370,10 @@ private fun darkTextFieldColors(): TextFieldColors =
     OutlinedTextFieldDefaults.colors(
         focusedTextColor = Color.White,
         unfocusedTextColor = Color.White,
-        focusedContainerColor = Color(0xFF0F0F0F),
-        unfocusedContainerColor = Color(0xFF0F0F0F),
+        focusedContainerColor = Color(0xFF121212),
+        unfocusedContainerColor = Color(0xFF121212),
         focusedBorderColor = Color(0xFF90CAF9),
-        unfocusedBorderColor = Color(0xFF374151),
+        unfocusedBorderColor = Color(0xFF424242),
         cursorColor = Color.White,
         focusedLabelColor = Color(0xFF90CAF9),
         unfocusedLabelColor = Color(0xFFB0BEC5),
@@ -1368,29 +1399,40 @@ fun SettingsDialog(
                 OutlinedTextField(
                     value = ip,
                     onValueChange = { ip = it },
-                    label = { Text("Server IP Address") }
+                    label = { Text("Server IP Address") },
+                    colors = darkTextFieldColors()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(
                     value = port,
                     onValueChange = { port = it },
-                    label = { Text("Port") }
+                    label = { Text("Port") },
+                    colors = darkTextFieldColors()
                 )
             }
         },
         confirmButton = {
-            Button(onClick = {
-                val portInt = port.toIntOrNull() ?: DEFAULT_PORT
-                onSave(Pair(ip, portInt))
-            }) {
+            Button(
+                onClick = {
+                    val portInt = port.toIntOrNull() ?: DEFAULT_PORT
+                    onSave(Pair(ip, portInt))
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF90CAF9), contentColor = Color.Black)
+            ) {
                 Text("Save")
             }
         },
         dismissButton = {
-            Button(onClick = onDismiss) {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = Color.White)
+            ) {
                 Text("Cancel")
             }
-        }
+        },
+        containerColor = Color(0xFF1A1A1A),
+        titleContentColor = Color.White,
+        textContentColor = Color.White
     )
 }
 

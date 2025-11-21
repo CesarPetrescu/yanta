@@ -38,6 +38,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -53,15 +58,19 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.wear.compose.material.Button
+import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Card
 import androidx.wear.compose.material.CardDefaults
 import androidx.wear.compose.material.Colors
+import androidx.wear.compose.material.CompactChip
+import androidx.wear.compose.material.Icon
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.ScalingLazyListAnchorType
@@ -111,7 +120,7 @@ data class NotesEnvelope(
 class MainActivity : ComponentActivity() {
     private val notesState = mutableStateListOf<NotePayload>()
     private val projectsState = mutableStateListOf<ProjectPayload>()
-    private val statusState = mutableStateOf("Scanning for phone...")
+    private val statusState = mutableStateOf("Scanning...")
     private val gson = Gson()
     
     // BLE Components
@@ -150,7 +159,8 @@ class MainActivity : ComponentActivity() {
                     notes = notesState,
                     projects = projectsState,
                     status = statusState.value,
-                    onSend = ::sendToPhone
+                    onSend = ::sendToPhone,
+                    onRefresh = ::requestState
                 )
             }
         }
@@ -180,7 +190,7 @@ class MainActivity : ComponentActivity() {
         
         bluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, scanCallback)
         isScanning = true
-        statusState.value = "Scanning for phone..."
+        statusState.value = "Scanning..."
         Log.i("BLE", "Started BLE scan")
     }
     
@@ -212,7 +222,7 @@ class MainActivity : ComponentActivity() {
         
         override fun onScanFailed(errorCode: Int) {
             Log.e("BLE", "Scan failed with error: $errorCode")
-            statusState.value = "Scan failed: $errorCode"
+            statusState.value = "Scan failed"
             
             // Retry scanning after delay
             CoroutineScope(Dispatchers.Main).launch {
@@ -229,7 +239,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         
-        statusState.value = "Connecting to phone..."
+        statusState.value = "Connecting..."
         bluetoothGatt = device.connectGatt(this, true, gattCallback)
         Log.i("BLE", "Connecting to device: ${device.address}")
     }
@@ -244,7 +254,7 @@ class MainActivity : ComponentActivity() {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i("BLE", "Connected to phone, discovering services...")
                     runOnUiThread {
-                        statusState.value = "Connected, discovering..."
+                        statusState.value = "Connected"
                     }
                     gatt.discoverServices()
                 }
@@ -291,7 +301,7 @@ class MainActivity : ComponentActivity() {
                     }
                     
                     runOnUiThread {
-                        statusState.value = "Connected to phone (BLE)"
+                        statusState.value = "Connected"
                     }
                     
                     // Request initial state
@@ -299,7 +309,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Log.e("BLE", "Service not found")
                     runOnUiThread {
-                        statusState.value = "Service not found"
+                        statusState.value = "Service missing"
                     }
                 }
             } else {
@@ -472,7 +482,8 @@ fun WatchUI(
     notes: List<NotePayload>,
     projects: List<ProjectPayload>,
     status: String,
-    onSend: (String, String?) -> Unit
+    onSend: (String, String?) -> Unit,
+    onRefresh: () -> Unit
 ) {
     val listState: ScalingLazyListState = rememberScalingLazyListState()
     var quickNote by remember { mutableStateOf("") }
@@ -487,7 +498,23 @@ fun WatchUI(
             state = listState,
             anchorType = ScalingLazyListAnchorType.ItemStart
         ) {
-            item { StatusChip(status = status) }
+            item { 
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    StatusChipCompact(status = status)
+                    Spacer(Modifier.width(4.dp))
+                    Button(
+                        onClick = onRefresh,
+                        colors = ButtonDefaults.iconButtonColors(contentColor = Color.White, backgroundColor = Color(0xFF222222)),
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(14.dp))
+                    }
+                }
+            }
             item {
                 QuickComposeCard(
                     text = quickNote,
@@ -516,33 +543,25 @@ fun WatchUI(
 }
 
 @Composable
-fun StatusChip(status: String) {
-    val outline = if (status.contains("Connected", true)) Color(0xFF4CAF50) else Color(0xFFFFC107)
-    Card(
+fun StatusChipCompact(status: String) {
+    val connected = status.contains("Connected", true)
+    val color = if (connected) Color(0xFF4CAF50) else Color(0xFFFFC107)
+    
+    CompactChip(
         onClick = {},
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 6.dp)
-            .border(1.dp, outline.copy(alpha = 0.7f), RoundedCornerShape(10.dp)),
-        backgroundPainter = CardDefaults.cardBackgroundPainter(Color.Black),
-        contentColor = Color.White
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text("BLE Status", color = Color.White, style = MaterialTheme.typography.caption2)
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .background(outline, CircleShape)
-            )
-            Text(status, color = outline, style = MaterialTheme.typography.caption2, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
+        label = { 
+             Row(verticalAlignment = Alignment.CenterVertically) {
+                 Box(modifier = Modifier.size(6.dp).background(color, CircleShape))
+                 Spacer(Modifier.width(4.dp))
+                 Text(status, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.caption2)
+             }
+        },
+        colors = androidx.wear.compose.material.ChipDefaults.secondaryChipColors(
+            backgroundColor = Color(0xFF111111),
+            contentColor = Color.White
+        ),
+        border = androidx.wear.compose.material.ChipDefaults.chipBorder(BorderStroke(1.dp, color.copy(alpha = 0.5f)))
+    )
 }
 
 @Composable
@@ -559,70 +578,57 @@ fun QuickComposeCard(
         onClick = {},
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
+            .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
         backgroundPainter = CardDefaults.cardBackgroundPainter(Color.Black),
         contentColor = Color.White
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Column(modifier = Modifier.padding(2.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                ChipProjectBadge(projectName, projectColor, onProjectTapped)
+                CompactChip(
+                    onClick = onProjectTapped,
+                    label = { Text(projectName, style = MaterialTheme.typography.caption2, color = Color.Black) },
+                    colors = androidx.wear.compose.material.ChipDefaults.chipColors(backgroundColor = accent),
+                    modifier = Modifier.height(24.dp)
+                )
+                
                 Button(
                     onClick = onSend,
                     enabled = text.isNotBlank(),
-                    modifier = Modifier
-                        .border(1.dp, accent.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                    colors = ButtonDefaults.iconButtonColors(
+                        backgroundColor = if (text.isNotBlank()) accent else Color.DarkGray,
+                        contentColor = Color.Black
+                    ),
+                    modifier = Modifier.size(28.dp)
                 ) {
-                    Text("Send", color = Color.Black)
+                    Icon(Icons.Default.Send, contentDescription = "Send", modifier = Modifier.size(14.dp))
                 }
             }
             Spacer(modifier = Modifier.height(6.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                    .padding(6.dp)
+                    .background(Color(0xFF111111), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
                 if (text.isBlank()) {
-                    Text("Quick note", color = Color.Gray, style = MaterialTheme.typography.caption2)
+                    Text("Quick note...", color = Color.Gray, style = MaterialTheme.typography.caption2)
                 }
                 BasicTextField(
                     value = text,
                     onValueChange = onTextChange,
                     singleLine = true,
-                    textStyle = MaterialTheme.typography.caption1.copy(color = Color.White, fontWeight = FontWeight.Medium),
+                    textStyle = MaterialTheme.typography.caption2.copy(color = Color.White),
+                    keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { onSend() }),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
         }
     }
-}
-
-@Composable
-fun ChipProjectBadge(name: String, colorHex: String, onClick: () -> Unit) {
-    val color = Color.fromHex(colorHex)
-    androidx.wear.compose.material.Chip(
-        modifier = Modifier.height(28.dp),
-        colors = androidx.wear.compose.material.ChipDefaults.chipColors(
-            backgroundColor = Color.Black,
-            contentColor = Color.White
-        ),
-        border = androidx.wear.compose.material.ChipDefaults.chipBorder(BorderStroke(1.dp, color)),
-        onClick = onClick,
-        label = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(color, CircleShape)
-                )
-                Text(name, color = Color.White, style = MaterialTheme.typography.caption2, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    )
 }
 
 @Composable
@@ -632,38 +638,24 @@ fun NoteCardWatch(note: NotePayload) {
         onClick = {},
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 6.dp)
-            .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(10.dp)),
-        backgroundPainter = CardDefaults.cardBackgroundPainter(Color.Black),
+            .padding(bottom = 4.dp)
+            .border(1.dp, accent.copy(alpha = 0.3f), RoundedCornerShape(12.dp)),
+        backgroundPainter = CardDefaults.cardBackgroundPainter(Color(0xFF0A0A0A)),
         contentColor = Color.White
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(accent, CircleShape)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = note.title.ifBlank { "Untitled" },
-                    color = Color.White,
-                    style = MaterialTheme.typography.body2,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(modifier = Modifier.height(4.dp))
+        Column(modifier = Modifier.padding(6.dp)) {
+            Text(
+                text = note.title.ifBlank { "Untitled" },
+                color = Color.White,
+                style = MaterialTheme.typography.button,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(2.dp))
             MarkdownTextWatch(
                 text = note.content,
                 accent = accent,
-                bodyColor = Color.White.copy(alpha = 0.9f)
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = note.projectName ?: DEFAULT_PROJECT_NAME,
-                color = accent,
-                style = MaterialTheme.typography.caption2
+                bodyColor = Color.White.copy(alpha = 0.8f)
             )
         }
     }
@@ -672,7 +664,7 @@ fun NoteCardWatch(note: NotePayload) {
 @Composable
 fun MarkdownTextWatch(text: String, accent: Color, bodyColor: Color) {
     val content = remember(text, accent, bodyColor) { markdownToAnnotatedString(text, accent, bodyColor) }
-    Text(content, color = bodyColor, style = MaterialTheme.typography.caption1, maxLines = 3, overflow = TextOverflow.Ellipsis)
+    Text(content, color = bodyColor, style = MaterialTheme.typography.caption2, maxLines = 2, overflow = TextOverflow.Ellipsis)
 }
 
 private fun markdownToAnnotatedString(raw: String, accent: Color, bodyColor: Color): AnnotatedString {
