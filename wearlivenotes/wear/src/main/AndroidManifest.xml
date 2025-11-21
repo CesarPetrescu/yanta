@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- This is the critical line that identifies the app as a watch face -->
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <!-- Required permissions for Bluetooth communication -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:drawable/ic_dialog_info"
+        android:label="Live Notes Watch">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="Live Notes Watch">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

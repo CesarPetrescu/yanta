@@ -1,0 +1,17 @@
+# FastAPI WebSocket Server for Live Notes Sync
+# Python 3.8+ required
+
+# Core framework
+fastapi==0.104.1
+
+# ASGI server for production deployment
+uvicorn[standard]==0.24.0
+
+# Additional utilities (already included with FastAPI but listed for clarity)
+# pydantic>=2.0.0  # Included with FastAPI
+# starlette>=0.27.0  # Included with FastAPI
+
+# Optional: For development/debugging
+# python-multipart==0.0.6  # For form data handling (if needed later)
+# python-dotenv==1.0.0  # For environment variable management
+
