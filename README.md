@@ -5,19 +5,42 @@ A full-stack note-taking system with real-time synchronization across Android ph
 ## 🏗️ Architecture
 
 ### Three-Tier Sync System
-1. **Phone App** (Android) - Main interface with WebSocket cloud sync
-2. **Watch App** (Wear OS) - Offline-first sync via Bluetooth RFCOMM
+1. **Phone App** (Android) - Main interface with WebSocket cloud sync + BLE GATT Server
+2. **Watch App** (Wear OS) - Offline-first sync via BLE GATT Client
 3. **Backend Server** (FastAPI) - WebSocket server with SQLite persistence
 
 ### Sync Flow
 ```
-Phone ←──→ WebSocket ←──→ Server (Cloud)
-  ↑
-  │ Bluetooth RFCOMM
+Phone ←──────────→ WebSocket ←──────────→ Server (Cloud)
+  ↑                                           ↓
+  │ BLE GATT                          (SQLite Database)
+  │ (Notifications + Commands)
   │ (No Internet Required)
   ↓
 Watch
 ```
+
+### BLE Architecture Details
+
+**Phone (GATT Server):**
+- Advertises BLE service with custom UUID
+- Hosts two characteristics:
+  - **Data Characteristic** (READ + NOTIFY): Pushes note/project updates to watch
+  - **Command Characteristic** (WRITE): Receives commands from watch
+- Automatically notifies watch on any data change
+- Maintains persistent connection
+
+**Watch (GATT Client):**
+- Scans for phone's advertised service
+- Automatically connects to first matching device
+- Subscribes to data characteristic notifications
+- Writes commands to command characteristic
+- Auto-reconnects on disconnect
+
+**Data Flow:**
+1. **Phone → Watch**: Notes created on phone trigger BLE notification to watch
+2. **Watch → Phone**: Watch writes note command, phone processes and broadcasts to server
+3. **Server → Phone → Watch**: Server updates propagate through WebSocket to phone, then BLE to watch
 
 ## 📁 Project Structure
 
@@ -118,7 +141,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - ✅ Search and filter by project
 - ✅ Real-time WebSocket sync with server
 - ✅ Local markdown backups
-- ✅ Bluetooth bridge to watch (offline sync)
+- ✅ **BLE GATT Server** for watch communication (modern Bluetooth)
 - ✅ Tablet/landscape two-pane layout
 
 ### Watch App (Wear OS)
@@ -126,8 +149,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - ✅ Connection status indicator
 - ✅ Quick compose card with project colors
 - ✅ Full notes list with previews
-- ✅ Bluetooth RFCOMM sync (no internet needed)
+- ✅ **BLE GATT Client** sync (no internet needed, modern Bluetooth)
 - ✅ Offline-first architecture
+- ✅ Automatic reconnection on disconnect
 
 ### Backend Server (FastAPI)
 - ✅ SQLite persistence (projects + notes)
@@ -169,18 +193,32 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ## 🔧 Configuration
 
 ### Phone WebSocket Connection
-Edit `phonelivenotes/app/src/main/` to configure server URL:
-```kotlin
-// Default: ws://10.0.2.2:8000/ws (Android emulator)
-// Production: ws://your-server.com/ws
-```
+Configure server IP/port in the app settings (tap the gear icon):
+- **Default IP**: `192.168.10.161`
+- **Default Port**: `8000`
+- For Android emulator use: `10.0.2.2`
 
-### Bluetooth RFCOMM
-- **UUID**: `f9a86dbd-0cd6-4a4a-a904-3622fa6b49f4`
-- **Protocol**: Classic Bluetooth (not BLE)
-- **Messages**:
+### BLE Configuration
+Service and characteristic UUIDs are hardcoded in both apps:
+- **Service UUID**: `a9e86dbd-0cd6-4a4a-a904-3622fa6b49f4`
+- **Data Characteristic**: `b9e86dbd-0cd6-4a4a-a904-3622fa6b49f4`
+- **Command Characteristic**: `c9e86dbd-0cd6-4a4a-a904-3622fa6b49f4`
+
+To change these, edit the UUIDs at the top of both `MainActivity.kt` files.
+
+### Bluetooth Low Energy (BLE)
+- **Service UUID**: `a9e86dbd-0cd6-4a4a-a904-3622fa6b49f4`
+- **Data Characteristic UUID**: `b9e86dbd-0cd6-4a4a-a904-3622fa6b49f4` (READ + NOTIFY)
+- **Command Characteristic UUID**: `c9e86dbd-0cd6-4a4a-a904-3622fa6b49f4` (WRITE)
+- **Protocol**: Bluetooth Low Energy (BLE) with GATT
+- **Commands**:
   - `{"new_note": NotePayload}` - Create note
   - `{"request_state": true}` - Request full state
+- **Features**:
+  - Modern BLE API (no deprecation warnings)
+  - Low power consumption
+  - Automatic notifications from phone to watch
+  - Automatic reconnection on disconnect
 
 ## 🏭 Production Deployment
 
@@ -210,10 +248,11 @@ zipalign -v 4 app-release-unsigned.apk app-release.apk
 
 ## 🐛 Known Issues & Limitations
 
-- Legacy Bluetooth adapter API deprecation warnings (Android 12+) - harmless for now
 - Release APKs are unsigned by default - sign before distribution
-- Watch requires Bluetooth pairing with phone for RFCOMM connection
+- Watch requires Bluetooth pairing with phone for initial BLE connection
+- BLE characteristic data limited to ~512 bytes per packet - large note lists may be truncated (consider chunking for production)
 - Server uses SQLite (single file) - consider PostgreSQL for heavy production use
+- Watch automatically scans and connects to first phone advertising the service UUID
 
 ## 🛠️ Development
 
@@ -224,6 +263,8 @@ zipalign -v 4 app-release-unsigned.apk app-release.apk
 - Python 3.8+ (for server)
 
 ### Testing
+
+#### Unit Tests
 ```bash
 # Run phone app tests
 cd phonelivenotes
@@ -233,6 +274,91 @@ cd phonelivenotes
 cd wearlivenotes
 ./gradlew :wear:test
 ```
+
+#### BLE Integration Testing
+
+**Prerequisites:**
+- Physical Android phone (emulator doesn't support BLE properly)
+- Physical Wear OS watch or emulator
+- Both devices must support Bluetooth Low Energy (BLE 4.0+)
+
+**Testing Steps:**
+
+1. **Pair Devices via Bluetooth Settings**
+   - On phone: Settings → Bluetooth → Pair new device
+   - On watch: Settings → Connectivity → Bluetooth
+   - Pair the devices (standard Bluetooth pairing)
+
+2. **Start the Server**
+   ```bash
+   cd server
+   uvicorn main:app --host 0.0.0.0 --port 8000
+   ```
+
+3. **Install and Launch Phone App**
+   ```bash
+   adb install -r phonelivenotes/app/build/outputs/apk/debug/app-debug.apk
+   adb shell am start -n com.example.phone_livenotes/.MainActivity
+   ```
+   - Check top bar shows "Live Notes (BLE)"
+   - Grant Bluetooth permissions when prompted
+   - Verify status shows "Connected to server"
+   - In Settings (gear icon), verify/update server IP
+
+4. **Install and Launch Watch App**
+   ```bash
+   adb -s <WATCH_ID> install -r wearlivenotes/wear/build/outputs/apk/debug/wear-debug.apk
+   adb -s <WATCH_ID> shell am start -n com.example.phone_livenotes/.MainActivity
+   ```
+   - Grant Bluetooth permissions when prompted
+   - Watch should show "Scanning for phone..." then "Connecting..."
+   - Once connected: "Connected to phone (BLE)"
+
+5. **Test Note Creation from Phone**
+   - Tap FAB (+) button on phone
+   - Create a note with title and content
+   - Tap "Save & Sync"
+   - Verify note appears on phone immediately
+   - Verify note appears on watch within 1-2 seconds
+
+6. **Test Note Creation from Watch**
+   - On watch, scroll to "Quick Compose" card
+   - Tap project badge to cycle projects (if multiple exist)
+   - Enter text in the quick note field
+   - Tap "Send"
+   - Verify note appears on watch
+   - Verify note appears on phone within 1-2 seconds
+
+7. **Test Disconnection/Reconnection**
+   - Disable Bluetooth on phone or watch
+   - Verify status updates to "Disconnected" / "Reconnecting..."
+   - Re-enable Bluetooth
+   - Verify automatic reconnection within 3-5 seconds
+   - Verify notes sync after reconnection
+
+8. **Check Logs**
+   ```bash
+   # Phone logs
+   adb logcat | grep -E "BLE|GATT"
+   
+   # Watch logs
+   adb -s <WATCH_ID> logcat | grep -E "BLE|GATT"
+   ```
+
+**Expected Behavior:**
+- ✅ Phone advertises BLE service automatically
+- ✅ Watch scans and connects automatically
+- ✅ Bidirectional communication (phone ↔ watch)
+- ✅ Automatic reconnection on disconnect
+- ✅ Notes created on either device sync to both
+- ✅ Server receives all notes from phone
+- ✅ Low latency (< 2 seconds for sync)
+
+**Common Issues:**
+- **Watch can't find phone**: Ensure devices are paired in Bluetooth settings first
+- **"Service not found"**: Verify UUIDs match in both MainActivity.kt files
+- **Permissions denied**: Check AndroidManifest.xml and grant all BLE permissions
+- **Data truncated**: Large note lists (>512 bytes JSON) may be cut off - this is a known limitation
 
 ### Debug Server
 ```bash

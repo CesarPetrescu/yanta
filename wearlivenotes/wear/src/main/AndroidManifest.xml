@@ -1,15 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- This is the critical line that identifies the app as a watch face -->
+    <!-- This identifies the app as a Wear OS app -->
     <uses-feature android:name="android.hardware.type.watch" />
+    
+    <!-- Declare BLE feature -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
 
-    <!-- Required permissions for Bluetooth communication -->
+    <!-- BLE Permissions (Android 12+) -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
+    
+    <!-- Location for BLE scanning (required on older Android versions) -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application

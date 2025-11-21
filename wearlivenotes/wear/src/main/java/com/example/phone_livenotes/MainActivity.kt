@@ -2,9 +2,22 @@ package com.example.phone_livenotes
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothSocket
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.ParcelUuid
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -66,7 +79,12 @@ import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.UUID
 
-private const val BT_UUID_STR_WATCH = "f9a86dbd-0cd6-4a4a-a904-3622fa6b49f4"
+// BLE Service and Characteristic UUIDs (must match phone app)
+private val SERVICE_UUID: UUID = UUID.fromString("a9e86dbd-0cd6-4a4a-a904-3622fa6b49f4")
+private val CHARACTERISTIC_DATA_UUID: UUID = UUID.fromString("b9e86dbd-0cd6-4a4a-a904-3622fa6b49f4")
+private val CHARACTERISTIC_COMMAND_UUID: UUID = UUID.fromString("c9e86dbd-0cd6-4a4a-a904-3622fa6b49f4")
+private val CLIENT_CHARACTERISTIC_CONFIG: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
 private const val DEFAULT_PROJECT_NAME = "Watch Capture"
 private const val DEFAULT_PROJECT_COLOR = "#80CBC4"
 
@@ -93,12 +111,27 @@ data class NotesEnvelope(
 class MainActivity : ComponentActivity() {
     private val notesState = mutableStateListOf<NotePayload>()
     private val projectsState = mutableStateListOf<ProjectPayload>()
-    private val statusState = mutableStateOf("Connecting to phone...")
+    private val statusState = mutableStateOf("Scanning for phone...")
     private val gson = Gson()
-    @Volatile private var watchSocket: BluetoothSocket? = null
+    
+    // BLE Components
+    private var bluetoothManager: BluetoothManager? = null
+    private var bluetoothAdapter: BluetoothAdapter? = null
+    private var bluetoothLeScanner: BluetoothLeScanner? = null
+    private var bluetoothGatt: BluetoothGatt? = null
+    
+    // Characteristics
+    private var dataCharacteristic: BluetoothGattCharacteristic? = null
+    private var commandCharacteristic: BluetoothGattCharacteristic? = null
+    
+    private var isScanning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothAdapter = bluetoothManager?.adapter
+        bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
 
         ActivityCompat.requestPermissions(
             this,
@@ -109,7 +142,7 @@ class MainActivity : ComponentActivity() {
             1
         )
 
-        connectToPhone()
+        startBleScanning()
 
         setContent {
             OledTheme {
@@ -122,111 +155,296 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
-    private fun connectToPhone() {
-        CoroutineScope(Dispatchers.IO).launch {
-            while (true) {
-                if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        disconnectGatt()
+    }
+    
+    private fun startBleScanning() {
+        if (isScanning) return
+        
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            statusState.value = "BLE permission required"
+            return
+        }
+        
+        // Scan specifically for our service UUID
+        val scanFilter = ScanFilter.Builder()
+            .setServiceUuid(ParcelUuid(SERVICE_UUID))
+            .build()
+        
+        val scanSettings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+        
+        bluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, scanCallback)
+        isScanning = true
+        statusState.value = "Scanning for phone..."
+        Log.i("BLE", "Started BLE scan")
+    }
+    
+    private fun stopBleScanning() {
+        if (!isScanning) return
+        
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        
+        bluetoothLeScanner?.stopScan(scanCallback)
+        isScanning = false
+        Log.i("BLE", "Stopped BLE scan")
+    }
+    
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+            
+            val device = result.device
+            Log.i("BLE", "Found device: ${device.address}")
+            
+            // Stop scanning and connect
+            stopBleScanning()
+            connectToDevice(device)
+        }
+        
+        override fun onScanFailed(errorCode: Int) {
+            Log.e("BLE", "Scan failed with error: $errorCode")
+            statusState.value = "Scan failed: $errorCode"
+            
+            // Retry scanning after delay
+            CoroutineScope(Dispatchers.Main).launch {
+                delay(3000)
+                if (!isScanning) {
+                    startBleScanning()
+                }
+            }
+        }
+    }
+    
+    private fun connectToDevice(device: BluetoothDevice) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        
+        statusState.value = "Connecting to phone..."
+        bluetoothGatt = device.connectGatt(this, true, gattCallback)
+        Log.i("BLE", "Connecting to device: ${device.address}")
+    }
+    
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+            
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    Log.i("BLE", "Connected to phone, discovering services...")
+                    runOnUiThread {
+                        statusState.value = "Connected, discovering..."
+                    }
+                    gatt.discoverServices()
+                }
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    Log.i("BLE", "Disconnected from phone")
+                    runOnUiThread {
+                        statusState.value = "Disconnected"
+                    }
+                    dataCharacteristic = null
+                    commandCharacteristic = null
+                    
+                    // Retry connection after delay
+                    CoroutineScope(Dispatchers.Main).launch {
+                        delay(2000)
+                        startBleScanning()
+                    }
+                }
+            }
+        }
+        
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+            
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                val service = gatt.getService(SERVICE_UUID)
+                if (service != null) {
+                    dataCharacteristic = service.getCharacteristic(CHARACTERISTIC_DATA_UUID)
+                    commandCharacteristic = service.getCharacteristic(CHARACTERISTIC_COMMAND_UUID)
+                    
+                    Log.i("BLE", "Found service and characteristics")
+                    
+                    // Enable notifications on data characteristic
+                    dataCharacteristic?.let { char ->
+                        gatt.setCharacteristicNotification(char, true)
+                        
+                        // Write to descriptor to enable notifications
+                        val descriptor = char.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
+                        descriptor?.let {
+                            it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            gatt.writeDescriptor(it)
+                        }
+                    }
+                    
+                    runOnUiThread {
+                        statusState.value = "Connected to phone (BLE)"
+                    }
+                    
+                    // Request initial state
+                    requestState()
+                } else {
+                    Log.e("BLE", "Service not found")
+                    runOnUiThread {
+                        statusState.value = "Service not found"
+                    }
+                }
+            } else {
+                Log.e("BLE", "Service discovery failed: $status")
+                runOnUiThread {
+                    statusState.value = "Discovery failed"
+                }
+            }
+        }
+        
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (characteristic.uuid == CHARACTERISTIC_DATA_UUID) {
+                val data = characteristic.value
+                if (data != null && data.isNotEmpty()) {
                     try {
-                        val adapter = BluetoothAdapter.getDefaultAdapter()
-                        if (adapter == null) {
-                            statusState.value = "No Bluetooth adapter"
-                        } else {
-                            adapter.cancelDiscovery()
-                            val device = adapter.bondedDevices.firstOrNull()
-
-                            if (device != null) {
-                                val uuid = UUID.fromString(BT_UUID_STR_WATCH)
-                                val socket = device.createRfcommSocketToServiceRecord(uuid)
-                                socket.connect() // blocking
-                                watchSocket?.close()
-                                watchSocket = socket
-                                statusState.value = "Connected to phone"
-
-                                // Request latest state from phone and keep pulling while connected
-                                val requestJson = gson.toJson(mapOf("request_state" to true))
-                                try {
-                                    statusState.value = "Syncing..."
-                                    socket.outputStream.write(requestJson.toByteArray())
-                                    statusState.value = "Connected to phone"
-                                } catch (_: Exception) {}
-
-                                val syncJob = launch {
-                                    while (isActive && socket.isConnected) {
-                                        delay(12000)
-                                        try {
-                                            statusState.value = "Syncing..."
-                                            socket.outputStream.write(requestJson.toByteArray())
-                                            statusState.value = "Connected to phone"
-                                        } catch (_: Exception) {
-                                            break
-                                        }
-                                    }
-                                }
-
-                                val buffer = ByteArray(4096)
-                                while (true) {
-                                    val bytes = socket.inputStream.read(buffer)
-                                    if (bytes <= 0) break
-                                    val message = String(buffer, 0, bytes)
-                                    val envelope = gson.fromJson(message, NotesEnvelope::class.java)
-                                    envelope.projects?.let { projects ->
-                                        runOnUiThread {
-                                            projectsState.clear()
-                                            projectsState.addAll(projects)
-                                        }
-                                    }
-                                    envelope.notes?.let { notes ->
-                                        runOnUiThread {
-                                            notesState.clear()
-                                            notesState.addAll(notes)
-                                        }
-                                    }
-                                }
-                                syncJob.cancel()
-                                statusState.value = "Disconnected"
-                                try { socket.close() } catch (_: Exception) {}
-                            } else {
-                                statusState.value = "Pair phone via Bluetooth"
+                        val json = String(data, Charsets.UTF_8)
+                        val envelope = gson.fromJson(json, NotesEnvelope::class.java)
+                        
+                        envelope.projects?.let { projects ->
+                            runOnUiThread {
+                                projectsState.clear()
+                                projectsState.addAll(projects)
                             }
                         }
+                        
+                        envelope.notes?.let { notes ->
+                            runOnUiThread {
+                                notesState.clear()
+                                notesState.addAll(notes)
+                            }
+                        }
+                        
+                        Log.i("BLE", "Received update: ${notesState.size} notes, ${projectsState.size} projects")
                     } catch (e: Exception) {
-                        Log.e("Watch", "Connection failed, retrying...", e)
-                        statusState.value = "Reconnecting..."
-                        watchSocket = null
-                        try { watchSocket?.close() } catch (_: Exception) {}
+                        Log.e("BLE", "Failed to parse notification", e)
                     }
+                }
             }
-                delay(2500)
+        }
+        
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == CHARACTERISTIC_DATA_UUID) {
+                val data = characteristic.value
+                if (data != null && data.isNotEmpty()) {
+                    try {
+                        val json = String(data, Charsets.UTF_8)
+                        val envelope = gson.fromJson(json, NotesEnvelope::class.java)
+                        
+                        envelope.projects?.let { projects ->
+                            runOnUiThread {
+                                projectsState.clear()
+                                projectsState.addAll(projects)
+                            }
+                        }
+                        
+                        envelope.notes?.let { notes ->
+                            runOnUiThread {
+                                notesState.clear()
+                                notesState.addAll(notes)
+                            }
+                        }
+                        
+                        Log.i("BLE", "Read data: ${notesState.size} notes, ${projectsState.size} projects")
+                    } catch (e: Exception) {
+                        Log.e("BLE", "Failed to parse read data", e)
+                    }
+                }
             }
+        }
+        
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.i("BLE", "Write successful")
+            } else {
+                Log.e("BLE", "Write failed: $status")
+            }
+        }
+        
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.i("BLE", "Descriptor write successful - notifications enabled")
+                // Now request initial state
+                requestState()
+            } else {
+                Log.e("BLE", "Descriptor write failed: $status")
+            }
+        }
+    }
+    
+    private fun requestState() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        
+        commandCharacteristic?.let { char ->
+            val request = gson.toJson(mapOf("request_state" to true))
+            char.value = request.toByteArray(Charsets.UTF_8)
+            bluetoothGatt?.writeCharacteristic(char)
+            Log.i("BLE", "Requested state from phone")
         }
     }
 
     private fun sendToPhone(text: String, projectName: String?) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        
         val payload = NotePayload(
             title = if (text.length > 30) text.take(30) + "..." else text,
             content = text,
             projectName = projectName?.ifBlank { DEFAULT_PROJECT_NAME } ?: DEFAULT_PROJECT_NAME,
             projectColor = projectsState.firstOrNull { it.name == projectName }?.color ?: DEFAULT_PROJECT_COLOR
         )
+        
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val json = gson.toJson(mapOf("new_note" to payload))
-                val socket = watchSocket
-                if (socket != null && socket.isConnected) {
-                    socket.outputStream.write(json.toByteArray())
-                    try {
-                        val request = gson.toJson(mapOf("request_state" to true))
-                        socket.outputStream.write(request.toByteArray())
-                    } catch (_: Exception) {}
-                } else {
-                    statusState.value = "Reconnecting..."
+                commandCharacteristic?.let { char ->
+                    val json = gson.toJson(mapOf("new_note" to payload))
+                    char.value = json.toByteArray(Charsets.UTF_8)
+                    bluetoothGatt?.writeCharacteristic(char)
+                    
+                    Log.i("BLE", "Sent note to phone")
+                    
+                    // Request updated state after a brief delay
+                    delay(500)
+                    requestState()
                 }
             } catch (e: Exception) {
-                Log.e("Watch", "Send failed", e)
-                statusState.value = "Reconnecting..."
+                Log.e("BLE", "Failed to send note", e)
+                runOnUiThread {
+                    statusState.value = "Send failed"
+                }
             }
         }
+    }
+    
+    private fun disconnectGatt() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        
+        stopBleScanning()
+        bluetoothGatt?.disconnect()
+        bluetoothGatt?.close()
+        bluetoothGatt = null
     }
 }
 
@@ -316,13 +534,13 @@ fun StatusChip(status: String) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("Status", color = Color.White, style = MaterialTheme.typography.caption2)
+            Text("BLE Status", color = Color.White, style = MaterialTheme.typography.caption2)
             Box(
                 modifier = Modifier
                     .size(10.dp)
                     .background(outline, CircleShape)
             )
-            Text(status, color = outline, style = MaterialTheme.typography.caption2)
+            Text(status, color = outline, style = MaterialTheme.typography.caption2, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -401,7 +619,7 @@ fun ChipProjectBadge(name: String, colorHex: String, onClick: () -> Unit) {
                         .size(10.dp)
                         .background(color, CircleShape)
                 )
-                Text(name, color = Color.White, style = MaterialTheme.typography.caption2)
+                Text(name, color = Color.White, style = MaterialTheme.typography.caption2, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     )
@@ -454,7 +672,7 @@ fun NoteCardWatch(note: NotePayload) {
 @Composable
 fun MarkdownTextWatch(text: String, accent: Color, bodyColor: Color) {
     val content = remember(text, accent, bodyColor) { markdownToAnnotatedString(text, accent, bodyColor) }
-    Text(content, color = bodyColor, style = MaterialTheme.typography.caption1)
+    Text(content, color = bodyColor, style = MaterialTheme.typography.caption1, maxLines = 3, overflow = TextOverflow.Ellipsis)
 }
 
 private fun markdownToAnnotatedString(raw: String, accent: Color, bodyColor: Color): AnnotatedString {
