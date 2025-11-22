@@ -1,24 +1,15 @@
 package com.example.phone_livenotes
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
-import android.bluetooth.BluetoothGattServer
-import android.bluetooth.BluetoothGattServerCallback
-import android.bluetooth.BluetoothGattService
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
-import android.bluetooth.le.AdvertiseCallback
-import android.bluetooth.le.AdvertiseData
-import android.bluetooth.le.AdvertiseSettings
-import android.bluetooth.le.BluetoothLeAdvertiser
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.os.Build
 import android.os.Bundle
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,6 +28,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -85,9 +77,8 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -105,19 +96,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
-import androidx.lifecycle.lifecycleScope
-import com.google.gson.Gson
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import java.io.File
+import androidx.core.content.ContextCompat
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -135,7 +114,7 @@ val CLIENT_CHARACTERISTIC_CONFIG: UUID = UUID.fromString("00002902-0000-1000-800
 const val DEFAULT_SERVER_IP = "192.168.10.161"
 const val DEFAULT_PORT = 8000
 
-private val PROJECT_PALETTE = listOf(
+val PROJECT_PALETTE = listOf(
     "#90CAF9", "#FFB74D", "#A5D6A7", "#F48FB1", "#CE93D8", "#FFE082", "#80CBC4", "#B0BEC5"
 )
 
@@ -160,55 +139,75 @@ data class NotesEnvelope(
 )
 
 class MainActivity : ComponentActivity() {
-    private val notesState = mutableStateListOf<NotePayload>()
-    private val projectsState = mutableStateListOf<ProjectPayload>()
-    private val connectionStatus = mutableStateOf("Disconnected")
-    private val gson = Gson()
-
-    private val client = OkHttpClient()
-    private var webSocket: WebSocket? = null
-    
-    // BLE Components
-    private var bluetoothManager: BluetoothManager? = null
-    private var bluetoothAdapter: BluetoothAdapter? = null
-    private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
-    private var gattServer: BluetoothGattServer? = null
-    private val connectedDevices = mutableSetOf<BluetoothDevice>()
-    
-    // Characteristics for BLE communication
-    private var dataCharacteristic: BluetoothGattCharacteristic? = null
-    private var commandCharacteristic: BluetoothGattCharacteristic? = null
+    private val notesState = SyncState.notes
+    private val projectsState = SyncState.projects
+    private val connectionStatus = SyncState.connectionStatus
 
     private lateinit var prefs: android.content.SharedPreferences
-    private val cacheFile: File by lazy { File(filesDir, "cached_state.json") }
-    
-    private val requiredPermissions = arrayOf(
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_ADVERTISE,
-        Manifest.permission.ACCESS_FINE_LOCATION
-    )
+
+    private val requiredPermissions: Array<String>
+        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
+        }
+
+    private var syncService: SyncService? = null
+    private var serviceBound = false
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: android.os.IBinder?) {
+            val localBinder = binder as? SyncService.LocalBinder
+            syncService = localBinder?.getService()
+            serviceBound = syncService != null
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            syncService = null
+            serviceBound = false
+        }
+    }
+
+    private fun startAndBindService() {
+        val intent = Intent(this, SyncService::class.java)
+        ContextCompat.startForegroundService(this, intent)
+        bindToService()
+    }
+
+    private fun bindToService() {
+        if (serviceBound) return
+        val intent = Intent(this, SyncService::class.java)
+        serviceBound = bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         prefs = getSharedPreferences("livenotes_prefs", Context.MODE_PRIVATE)
-        bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        bluetoothAdapter = bluetoothManager?.adapter
-
-        loadCachedState()
 
         val requestPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { granted ->
             if (granted.values.all { it }) {
-                startServices()
+                ensureBluetoothOn()
+                startAndBindService()
             } else {
                 connectionStatus.value = "Permissions required"
             }
         }
         if (hasAllPermissions()) {
-            startServices()
+            ensureBluetoothOn()
+            startAndBindService()
         } else {
             requestPermissionLauncher.launch(requiredPermissions)
         }
@@ -246,19 +245,25 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
+    
     override fun onStart() {
         super.onStart()
-        if (hasAllPermissions()) startServices()
+        if (hasAllPermissions()) bindToService()
     }
-
+    
     override fun onStop() {
         super.onStop()
-        stopServices()
+        if (serviceBound) {
+            unbindService(serviceConnection)
+            serviceBound = false
+        }
     }
-
+    
     override fun onDestroy() {
-        stopServices()
+        if (serviceBound) {
+            unbindService(serviceConnection)
+            serviceBound = false
+        }
         super.onDestroy()
     }
 
@@ -267,14 +272,16 @@ class MainActivity : ComponentActivity() {
             ActivityCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
-    private fun startServices() {
-        connectWebSocket()
-        startBleGattServer()
-    }
-
-    private fun stopServices() {
-        teardownWebSocket()
-        stopBleGattServer()
+    private fun ensureBluetoothOn() {
+        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter = manager?.adapter
+        if (adapter != null && !adapter.isEnabled) {
+            try {
+                startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            } catch (_: Exception) {
+                // ignore
+            }
+        }
     }
 
     private fun getCurrentIp(): String = prefs.getString("server_ip", DEFAULT_SERVER_IP) ?: DEFAULT_SERVER_IP
@@ -286,382 +293,17 @@ class MainActivity : ComponentActivity() {
             putInt("server_port", port)
             apply()
         }
-        teardownWebSocket()
-        connectWebSocket()
-    }
-
-    private fun connectWebSocket() {
-        if (webSocket != null) return
-        val url = "ws://${getCurrentIp()}:${getCurrentPort()}/ws"
-        val request = Request.Builder().url(url).build()
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                runOnUiThread { connectionStatus.value = "Connected to server" }
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                try {
-                    val envelope = gson.fromJson(text, NotesEnvelope::class.java)
-                    envelope.projects?.let { projects ->
-                        runOnUiThread {
-                            projectsState.clear()
-                            projectsState.addAll(projects.sortedBy { it.name.lowercase(Locale.getDefault()) })
-                        }
-                        persistCache(notesState, projectsState)
-                    }
-                    envelope.notes?.let { notes ->
-                        runOnUiThread {
-                            notesState.clear()
-                            notesState.addAll(notes)
-                            sendToWatchViaBLE(notesState, projectsState)
-                        }
-                        persistCache(notes, projectsState)
-                    }
-                } catch (e: Exception) {
-                    Log.e("WS", "Parse error", e)
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                runOnUiThread { connectionStatus.value = "WS Error: ${t.message}" }
-            }
-        })
+        syncService?.applyServerSettings(ip, port)
     }
 
     private fun sendNote(note: NotePayload) {
-        if (note.title.isBlank() || note.content.isBlank()) return
-        val cleanedProject = note.projectName?.ifBlank { "General" } ?: "General"
-        val projectColor = note.projectColor ?: projectColorFor(cleanedProject)
-        val payload = note.copy(
-            title = note.title.trim(),
-            content = note.content.trim(),
-            projectName = cleanedProject,
-            projectColor = projectColor
-        )
-        webSocket?.send(gson.toJson(mapOf("new_note" to payload)))
-        // Optimistically update local state and mirror to watch
-        notesState.add(0, payload)
-        sendToWatchViaBLE(notesState, projectsState)
-        persistCache(notesState, projectsState)
-        saveLocally(payload)
-    }
-
-    private fun saveLocally(note: NotePayload) {
-        val file = File(filesDir, "QuickNotes.md")
-        val header = "\n## ${note.title}\nProject: ${note.projectName ?: "General"}\n\n"
-        file.appendText(header + note.content.trim() + "\n")
-    }
-
-    // ========== BLE GATT Server Implementation ==========
-    
-    private fun startBleGattServer() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            connectionStatus.value = "BLE permission missing"
+        if (!hasAllPermissions()) {
+            connectionStatus.value = "Permissions required"
             return
         }
-        
-        try {
-            // Create GATT service
-            val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-            
-            // Data characteristic (for sending data to watch) - READ + NOTIFY
-            dataCharacteristic = BluetoothGattCharacteristic(
-                CHARACTERISTIC_DATA_UUID,
-                BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-                BluetoothGattCharacteristic.PERMISSION_READ
-            )
-            
-            // Add Client Characteristic Configuration Descriptor for notifications
-            val configDescriptor = BluetoothGattDescriptor(
-                CLIENT_CHARACTERISTIC_CONFIG,
-                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
-            )
-            dataCharacteristic?.addDescriptor(configDescriptor)
-            
-            // Command characteristic (for receiving data from watch) - WRITE
-            commandCharacteristic = BluetoothGattCharacteristic(
-                CHARACTERISTIC_COMMAND_UUID,
-                BluetoothGattCharacteristic.PROPERTY_WRITE,
-                BluetoothGattCharacteristic.PERMISSION_WRITE
-            )
-            
-            service.addCharacteristic(dataCharacteristic)
-            service.addCharacteristic(commandCharacteristic)
-            
-            // Open GATT server
-            gattServer = bluetoothManager?.openGattServer(this, gattServerCallback)
-            gattServer?.addService(service)
-            
-            // Start advertising
-            startBleAdvertising()
-            
-            Log.i("BLE", "GATT Server started successfully")
-        } catch (e: Exception) {
-            Log.e("BLE", "Failed to start GATT server", e)
-            connectionStatus.value = "BLE Error: ${e.message}"
-        }
+        syncService?.sendNote(note)
     }
-    
-    private fun startBleAdvertising() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
-            return
-        }
-        
-        bluetoothLeAdvertiser = bluetoothAdapter?.bluetoothLeAdvertiser
-        
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setConnectable(true)
-            .setTimeout(0)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .build()
-        
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
-            .addServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
-        
-        bluetoothLeAdvertiser?.startAdvertising(settings, data, advertiseCallback)
-        Log.i("BLE", "Started advertising")
-    }
-    
-    private val advertiseCallback = object : AdvertiseCallback() {
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-            Log.i("BLE", "Advertising started successfully")
-        }
-        
-        override fun onStartFailure(errorCode: Int) {
-            Log.e("BLE", "Advertising failed with code: $errorCode")
-        }
-    }
-    
-    private val gattServerCallback = object : BluetoothGattServerCallback() {
-        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-            if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return
-            }
-            
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    connectedDevices.add(device)
-                    Log.i("BLE", "Watch connected: ${device.address}")
-                    runOnUiThread {
-                        connectionStatus.value = "Watch connected (BLE)"
-                    }
-                    // Send current state to newly connected watch
-                    sendToWatchViaBLE(notesState, projectsState)
-                }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    connectedDevices.remove(device)
-                    Log.i("BLE", "Watch disconnected: ${device.address}")
-                    runOnUiThread {
-                        if (connectedDevices.isEmpty()) {
-                            connectionStatus.value = "Watch disconnected"
-                        }
-                    }
-                }
-            }
-        }
-        
-        override fun onCharacteristicReadRequest(
-            device: BluetoothDevice,
-            requestId: Int,
-            offset: Int,
-            characteristic: BluetoothGattCharacteristic
-        ) {
-            if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return
-            }
-            
-            when (characteristic.uuid) {
-                CHARACTERISTIC_DATA_UUID -> {
-                    // Send current state
-                    val envelope = NotesEnvelope(notes = notesState.toList(), projects = projectsState.toList())
-                    val data = gson.toJson(envelope).toByteArray(Charsets.UTF_8)
-                    
-                    // Handle offset for large data
-                    val response = if (offset >= data.size) {
-                        byteArrayOf()
-                    } else {
-                        data.copyOfRange(offset, data.size)
-                    }
-                    
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, response)
-                }
-                else -> {
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
-                }
-            }
-        }
-        
-        override fun onCharacteristicWriteRequest(
-            device: BluetoothDevice,
-            requestId: Int,
-            characteristic: BluetoothGattCharacteristic,
-            preparedWrite: Boolean,
-            responseNeeded: Boolean,
-            offset: Int,
-            value: ByteArray
-        ) {
-            if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return
-            }
-            
-            when (characteristic.uuid) {
-                CHARACTERISTIC_COMMAND_UUID -> {
-                    try {
-                        val message = String(value, Charsets.UTF_8)
-                        val raw = gson.fromJson(message, Map::class.java)
-                        
-                        when {
-                            raw["request_state"] == true -> {
-                                sendToWatchViaBLE(notesState, projectsState)
-                            }
-                            raw["new_note"] != null -> {
-                                val note = gson.fromJson(gson.toJson(raw["new_note"]), NotePayload::class.java)
-                                runOnUiThread { sendNote(note) }
-                            }
-                        }
-                        
-                        if (responseNeeded) {
-                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                        }
-                    } catch (e: Exception) {
-                        Log.e("BLE", "Failed to process command", e)
-                        if (responseNeeded) {
-                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
-                        }
-                    }
-                }
-                else -> {
-                    if (responseNeeded) {
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
-                    }
-                }
-            }
-        }
-        
-        override fun onDescriptorWriteRequest(
-            device: BluetoothDevice,
-            requestId: Int,
-            descriptor: BluetoothGattDescriptor,
-            preparedWrite: Boolean,
-            responseNeeded: Boolean,
-            offset: Int,
-            value: ByteArray
-        ) {
-            if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return
-            }
-            
-            if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG) {
-                // Watch is subscribing to notifications
-                if (responseNeeded) {
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                }
-                Log.i("BLE", "Watch subscribed to notifications")
-            } else {
-                if (responseNeeded) {
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
-                }
-            }
-        }
-    }
-    
-    private fun sendToWatchViaBLE(notes: List<NotePayload>, projects: List<ProjectPayload>) {
-        if (connectedDevices.isEmpty() || dataCharacteristic == null) return
-        
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            return
-        }
-        
-        try {
-            val envelope = NotesEnvelope(notes = notes.toList(), projects = projects.toList())
-            val json = gson.toJson(envelope)
-            val data = json.toByteArray(Charsets.UTF_8)
-            
-            // BLE has a limit of ~512 bytes per characteristic
-            // For larger data, we'd need to chunk it or use a different approach
-            // For now, we'll send what fits and log if it's too large
-            if (data.size > 512) {
-                Log.w("BLE", "Data too large for single BLE packet: ${data.size} bytes. Consider chunking.")
-                // Send first 512 bytes for now
-                dataCharacteristic?.value = data.copyOf(512)
-            } else {
-                dataCharacteristic?.value = data
-            }
-            
-            // Notify all connected devices
-            connectedDevices.forEach { device ->
-                gattServer?.notifyCharacteristicChanged(device, dataCharacteristic, false)
-            }
-            
-            Log.i("BLE", "Sent data to ${connectedDevices.size} watch(es)")
-        } catch (e: Exception) {
-            Log.e("BLE", "Failed to send data to watch", e)
-        }
-    }
-    
-    private fun stopBleGattServer() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED) {
-            bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
-        }
-        
-        gattServer?.close()
-        gattServer = null
-        connectedDevices.clear()
-        Log.i("BLE", "GATT Server stopped")
-    }
-
-    private fun projectColorFor(projectName: String): String {
-        projectsState.firstOrNull { it.name == projectName }?.let { return it.color }
-        val palette = PROJECT_PALETTE
-        val index = projectName.hashCode().absoluteValue % palette.size
-        return palette[index]
-    }
-
-    private fun teardownWebSocket() {
-        try {
-            webSocket?.close(1000, "Lifecycle stop")
-        } catch (_: Exception) {
-        } finally {
-            webSocket = null
-        }
-    }
-
-    private fun persistCache(notes: List<NotePayload>, projects: List<ProjectPayload>) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val envelope = NotesEnvelope(notes = notes.toList(), projects = projects.toList())
-                cacheFile.writeText(gson.toJson(envelope))
-            } catch (e: Exception) {
-                Log.e("Cache", "Failed to write cache", e)
-            }
-        }
-    }
-
-    private fun loadCachedState() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                if (!cacheFile.exists()) return@launch
-                val cached = gson.fromJson(cacheFile.readText(), NotesEnvelope::class.java)
-                cached.projects?.let { projects ->
-                    withContext(Dispatchers.Main) {
-                        projectsState.clear()
-                        projectsState.addAll(projects.sortedBy { it.name.lowercase(Locale.getDefault()) })
-                    }
-                }
-                cached.notes?.let { notes ->
-                    withContext(Dispatchers.Main) {
-                        notesState.clear()
-                        notesState.addAll(notes)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("Cache", "Failed to load cache", e)
-            }
-        }
-    }
+    private fun nowTime(): String = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -675,10 +317,15 @@ fun PhoneUI(
     currentIp: String,
     currentPort: Int
 ) {
+    val availableProjects = if (projects.isNotEmpty()) {
+        projects
+    } else {
+        listOf(ProjectPayload(name = "General", color = PROJECT_PALETTE.first()))
+    }
     var title by remember { mutableStateOf("") }
     var body by remember { mutableStateOf("") }
-    var projectName by remember { mutableStateOf(projects.firstOrNull()?.name ?: "General") }
-    var projectColor by remember { mutableStateOf(projects.firstOrNull()?.color ?: PROJECT_PALETTE.first()) }
+    var projectName by remember { mutableStateOf(availableProjects.first().name) }
+    var projectColor by remember { mutableStateOf(availableProjects.first().color) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showPreview by remember { mutableStateOf(true) }
     var selectedProjectFilter by remember { mutableStateOf<String?>(null) }
@@ -687,10 +334,8 @@ fun PhoneUI(
     var showComposer by remember { mutableStateOf(false) }
     var editingNote by remember { mutableStateOf<NotePayload?>(null) }
 
-    val projectsByName = remember(projects) { projects.associateBy { it.name } }
-    val projectCounts = remember(notes) {
-        notes.groupingBy { it.projectName ?: "General" }.eachCount()
-    }
+    val projectsByName = projects.associateBy { it.name }
+    val projectCounts = notes.groupingBy { it.projectName ?: "General" }.eachCount()
 
     LaunchedEffect(projects.size) {
         if (projects.isNotEmpty()) {
@@ -711,14 +356,13 @@ fun PhoneUI(
         )
     }
 
-    val filteredNotes = remember(notes, selectedProjectFilter, searchQuery) {
-        notes.filter { note ->
-            val matchesProject = selectedProjectFilter == null || note.projectName == selectedProjectFilter
-            val query = searchQuery.trim().lowercase(Locale.getDefault())
-            val matchesQuery = query.isBlank() || note.title.lowercase(Locale.getDefault()).contains(query) ||
-                note.content.lowercase(Locale.getDefault()).contains(query)
-            matchesProject && matchesQuery
-        }
+    val filteredNotes = notes.filter { note ->
+        val matchesProject = selectedProjectFilter == null || (note.projectName ?: "General") == selectedProjectFilter
+        val query = searchQuery.trim().lowercase(Locale.getDefault())
+        val matchesQuery = query.isBlank() ||
+            note.title.lowercase(Locale.getDefault()).contains(query) ||
+            note.content.lowercase(Locale.getDefault()).contains(query)
+        matchesProject && matchesQuery
     }
 
     Scaffold(
@@ -745,8 +389,8 @@ fun PhoneUI(
                     title = ""
                     body = ""
                     showPreview = true
-                    projectName = projects.firstOrNull()?.name ?: "General"
-                    projectColor = projects.firstOrNull()?.color ?: PROJECT_PALETTE.first()
+                    projectName = availableProjects.first().name
+                    projectColor = availableProjects.first().color
                     showComposer = true
                 },
                 containerColor = Color(0xFF90CAF9),
@@ -869,12 +513,16 @@ fun PhoneUI(
                 onColorChange = { projectColor = it },
                 onTogglePreview = { showPreview = !showPreview },
                 onSubmit = {
+                    val updatedAt = System.currentTimeMillis()
+                    val existingId = editingNote?.id
                     onSend(
                         NotePayload(
+                            id = existingId,
                             title = title,
                             content = body,
                             projectName = projectName,
-                            projectColor = projectColor
+                            projectColor = projectColor,
+                            updatedAt = updatedAt
                         )
                     )
                     showComposer = false
@@ -892,21 +540,81 @@ fun PhoneUI(
 @Composable
 fun StatusRow(status: String) {
     val connected = status.contains("Connected", ignoreCase = true)
-    val chipColor = if (connected) Color(0xFF1B5E20) else Color(0xFFB71C1C)
+    val chipColor = if (connected) Color(0xFF4CAF50) else Color(0xFFFFC107)
+    val serverUp = status.contains("server", true) && !status.contains("Error", true)
+    val watchUp = status.contains("watch", true) || status.contains("Synced", true)
+    var showDebug by remember { mutableStateOf(false) }
+    val detail = when {
+        status.contains("Synced", true) -> "Phone ↔ Watch BLE is synced; websocket live."
+        status.contains("watch", true) && status.contains("Connected", true) -> "BLE link to watch is up. Notes stream automatically."
+        status.contains("Service missing", true) -> "Watch can’t find the phone advertiser. Open phone app to restart sync."
+        status.contains("BLE permission", true) -> "Grant Bluetooth + Location + Notifications to keep sync alive."
+        status.contains("Scanning", true) -> "Phone is advertising; watch is scanning. Keep Bluetooth on."
+        else -> "Live Notes sync service status (server + watch)."
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF1A1A1A), RoundedCornerShape(12.dp))
+            .background(Color.Black, RoundedCornerShape(12.dp))
+            .clickable { showDebug = true }
             .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text("Status: $status", style = MaterialTheme.typography.bodySmall, color = Color.White)
         Box(
             modifier = Modifier
-                .size(12.dp)
+                .size(10.dp)
                 .background(chipColor, CircleShape)
         )
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Status: $status", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+            Spacer(Modifier.height(2.dp))
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                StatusDot(label = "Server", ok = serverUp)
+                StatusDot(label = "Watch", ok = watchUp)
+            }
+        }
+    }
+    if (showDebug) {
+        AlertDialog(
+            onDismissRequest = { showDebug = false },
+            confirmButton = {
+                TextButton(onClick = { showDebug = false }) { Text("Close") }
+            },
+            title = { Text("Sync Debug") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                    Text("Current status: $status")
+                    Spacer(Modifier.height(8.dp))
+                    Text("Recent events:", fontWeight = FontWeight.Bold)
+                    if (SyncState.debugLog.isEmpty()) {
+                        Text("No events yet.")
+                    } else {
+                        SyncState.debugLog.take(10).forEach {
+                            Text(it, fontSize = 12.sp)
+                        }
+                    }
+                }
+            },
+            containerColor = Color(0xFF1A1A1A),
+            titleContentColor = Color.White,
+            textContentColor = Color.White
+        )
+    }
+}
+
+@Composable
+private fun StatusDot(label: String, ok: Boolean) {
+    val color = if (ok) Color(0xFF4CAF50) else Color(0xFFFFC107)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .background(color, CircleShape)
+        )
+        Text(label, style = MaterialTheme.typography.bodySmall, color = Color.White)
     }
 }
 
@@ -986,7 +694,7 @@ fun NoteComposer(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A)),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
         border = BorderStroke(1.25.dp, Color.fromHex(projectColor)),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
     ) {
@@ -1170,7 +878,7 @@ fun MarkdownPreview(body: String, tint: Color) {
     val text = if (body.isBlank()) "Start writing markdown to see a live preview." else body
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = tint.copy(alpha = 0.05f)),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
         border = BorderStroke(1.dp, tint.copy(alpha = 0.3f))
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -1201,7 +909,7 @@ fun NoteCard(note: NotePayload, onOpen: ((NotePayload) -> Unit)?) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = onOpen != null) { onOpen?.invoke(note) },
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF121212)),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
         border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {

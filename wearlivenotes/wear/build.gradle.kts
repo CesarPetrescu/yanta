@@ -53,6 +53,7 @@ dependencies {
     implementation("androidx.wear.compose:compose-material:1.3.0")
     implementation("androidx.wear.compose:compose-foundation:1.3.0")
     implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.compose.material:material-icons-extended:1.6.7")
     
     // For JSON parsing between phone and watch
     implementation("com.google.code.gson:gson:2.10.1")
